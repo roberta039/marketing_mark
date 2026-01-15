@@ -11,11 +11,13 @@ import json
 import requests
 import urllib.parse
 from io import BytesIO
+import random   # <--- NOU: Pentru a varia imaginile
+import time     # <--- NOU: Pentru a nu bloca serverul
 
 # --- 1. Configurare Pagină ---
-st.set_page_config(page_title="Marketing AI (Free)", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Marketing AI + Pollinations Fix", page_icon="🎨", layout="wide")
 
-# --- 2. Secrete (Doar cele gratuite) ---
+# --- 2. Secrete ---
 try:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
     TAVILY_API_KEY = st.secrets["TAVILY_API_KEY"]
@@ -53,31 +55,34 @@ def search_internet(query):
         return "\n".join([f"- {r['content']}" for r in res.get('results', [])])
     except: return "Fără date internet."
 
-# --- FUNCȚIE GENERARE IMAGINE GRATUITĂ (POLLINATIONS) ---
+# --- FUNCȚIE GENERARE IMAGINE (FIXATĂ PENTRU POLLINATIONS) ---
 def generate_image_free(prompt_text):
     """
-    Generează imagine gratuit folosind Pollinations (Model Flux).
-    Include protecție anti-eroare și headers de browser.
+    Generează imagine gratuit cu Pollinations.
+    FIX: Folosește Random Seed pentru a evita duplicatele.
     """
     try:
-        # 1. Scurtăm promptul (URL-urile lungi crapă)
+        # 1. Scurtăm promptul
         short_prompt = prompt_text[:200]
-        
-        # 2. Codăm URL-ul (spații -> %20)
         encoded_prompt = urllib.parse.quote(short_prompt)
         
-        # 3. URL Pollinations (Model Flux = Calitate bună)
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&nologo=true&seed=100"
+        # 2. Generăm un Seed Aleatoriu (Critic!)
+        # Dacă seed-ul e la fel, imaginea e la fel. Aici îl facem unic.
+        random_seed = random.randint(1, 999999)
         
-        # 4. Headers: Ne prefacem că suntem Chrome ca să nu ne blocheze
+        # 3. Construim URL-ul
+        # model=flux-realism este adesea mai bun pentru produse
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&nologo=true&seed={random_seed}"
+        
+        # 4. Headers (Browser spoofing)
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
-        # 5. Request
+        # 5. Request cu pauză mică
+        time.sleep(1) # Așteptăm 1 secundă să nu supărăm serverul
         response = requests.get(url, headers=headers, timeout=30)
         
-        # 6. Verificare conținut
         if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
             return BytesIO(response.content)
         else:
@@ -97,8 +102,8 @@ def create_presentation_with_images(slides_json):
 
     # Slide Titlu
     slide = prs.slides.add_slide(prs.slide_layouts[0])
-    slide.shapes.title.text = data.get("presentation_title", "Marketing")
-    slide.placeholders[1].text = "Generat Gratuit cu AI (Gemini + Flux)"
+    slide.shapes.title.text = data.get("presentation_title", "Marketing Strategy")
+    slide.placeholders[1].text = "Generat Automat (Gemini + Pollinations)"
 
     # Layout Custom
     blank_layout = prs.slide_layouts[6] 
@@ -107,13 +112,14 @@ def create_presentation_with_images(slides_json):
         slide = prs.slides.add_slide(blank_layout)
         shapes = slide.shapes
         
-        # Text UI
+        # Titlu
         tb = shapes.add_textbox(Inches(0.5), Inches(0.4), Inches(9), Inches(1))
         tb.text_frame.paragraphs[0].text = slide_data.get("title", "Slide")
         tb.text_frame.paragraphs[0].font.size = Pt(32)
         tb.text_frame.paragraphs[0].font.bold = True
         tb.text_frame.paragraphs[0].font.color.rgb = RGBColor(0, 51, 102)
 
+        # Body Text
         tb_body = shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(4.5), Inches(5))
         tf = tb_body.text_frame
         tf.word_wrap = True
@@ -123,14 +129,13 @@ def create_presentation_with_images(slides_json):
             p.font.size = Pt(18)
             p.space_after = Pt(12)
 
-        # IMAGINE GRATUITĂ
+        # IMAGINE GENERATĂ
         image_prompt = slide_data.get("image_prompt", "")
         image_bytes = None
         
         if image_prompt:
             image_bytes = generate_image_free(image_prompt)
         
-        # Inserare sau Fallback
         if image_bytes:
             try:
                 shapes.add_picture(image_bytes, Inches(5.5), Inches(1.8), Inches(4.2), Inches(4.2))
@@ -138,11 +143,12 @@ def create_presentation_with_images(slides_json):
                 image_bytes = None
         
         if not image_bytes:
+            # Fallback
             shape = shapes.add_shape(1, Inches(5.5), Inches(1.8), Inches(4.2), Inches(4.2))
             shape.fill.solid()
-            shape.fill.fore_color.rgb = RGBColor(220, 220, 220)
+            shape.fill.fore_color.rgb = RGBColor(230, 230, 230)
             tf_shape = shape.text_frame
-            tf_shape.text = "Imagine Indisponibilă\n(Eroare conexiune)"
+            tf_shape.text = "Imagine Indisponibilă"
             tf_shape.paragraphs[0].alignment = PP_ALIGN.CENTER
             tf_shape.paragraphs[0].font.color.rgb = RGBColor(100,100,100)
 
@@ -152,11 +158,10 @@ def create_presentation_with_images(slides_json):
 
 # --- 4. UI ---
 
-st.title("🚀 Asistent Marketing (Gratuit & Vizual)")
+st.title("🚀 Asistent Marketing (Imagini Fixate)")
 
 with st.sidebar:
     st.header("Configurare")
-    # Filtru pentru a arăta numele frumos
     model_name = st.selectbox("Model AI", get_available_models(), format_func=lambda x: x.replace("models/", "").upper())
     uploaded_file = st.file_uploader("Catalog PDF", type=['pdf'])
     
@@ -178,7 +183,7 @@ if uploaded_file and "gemini_file" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-if prompt := st.chat_input("Ex: Idei de promovare pentru produsele noi"):
+if prompt := st.chat_input("Ex: Vreau produse promoționale de lux"):
     if "gemini_file" not in st.session_state: st.error("Te rog încarcă PDF-ul.")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -201,12 +206,11 @@ if prompt := st.chat_input("Ex: Idei de promovare pentru produsele noi"):
 
 if "last_analysis" in st.session_state:
     st.divider()
-    if st.button("✨ Generează Prezentare (Cu Imagini Gratuite)"):
+    if st.button("✨ Generează Prezentare (Cu Imagini Unice)"):
         
         progress_bar = st.progress(0, text="Structura prezentării...")
         
         try:
-            # Configurare JSON
             try:
                 json_model = genai.GenerativeModel(model_name, generation_config={"response_mime_type": "application/json"})
             except:
@@ -217,7 +221,8 @@ if "last_analysis" in st.session_state:
             Generează JSON pentru 4-5 slide-uri.
             
             IMPORTANT:
-            Include 'image_prompt' (în ENGLEZĂ, max 20 cuvinte) descriind o fotografie de produs profesională.
+            Include 'image_prompt' (în ENGLEZĂ, max 15 cuvinte) descriind o fotografie.
+            Exemplu: "Luxury gold pen on black table"
             
             FORMAT:
             {{
@@ -226,7 +231,7 @@ if "last_analysis" in st.session_state:
                     {{ 
                         "title": "Titlu", 
                         "points": ["Punct 1"], 
-                        "image_prompt": "Minimalist photo of red pen on desk" 
+                        "image_prompt": "Minimalist photo of red pen" 
                     }}
                 ]
             }}
@@ -235,7 +240,7 @@ if "last_analysis" in st.session_state:
             resp = json_model.generate_content(prompt_slides)
             json_text = resp.text.replace("```json", "").replace("```", "").strip()
             
-            progress_bar.progress(20, text="Generez imagini cu Pollinations AI (Durează ~10 secunde)...")
+            progress_bar.progress(20, text="Generez imaginile (Durează ~15 secunde)...")
             
             pptx_path = create_presentation_with_images(json_text)
             
@@ -243,7 +248,7 @@ if "last_analysis" in st.session_state:
             
             if pptx_path:
                 with open(pptx_path, "rb") as f:
-                    st.download_button("📥 Descarcă PPTX", f, "Prezentare_Free.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+                    st.download_button("📥 Descarcă PPTX", f, "Prezentare_Vizuala.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
             else:
                 st.error("Eroare la generare fișier.")
                 
