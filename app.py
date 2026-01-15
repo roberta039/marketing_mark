@@ -81,7 +81,7 @@ def create_presentation_file(slides_json):
     # A. Slide de Titlu
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = data.get("presentation_title", "Analiză Portofoliu")
-    slide.placeholders[1].text = "Generat automat cu AI"
+    slide.placeholders[1].text = "......."
 
     # B. Slide-uri de Conținut (Layout Custom)
     blank_layout = prs.slide_layouts[6] 
@@ -128,8 +128,8 @@ def create_presentation_file(slides_json):
 
 # --- 4. Interfața Grafică (UI) ---
 
-st.title("🚀 Asistent Marketing & PPT Generator")
-st.markdown("Analiză multimodală (Text + Imagini) și generare de prezentări.")
+st.title("🚀 Asistent Marketing")
+st.markdown("Analiză multimodală (Text + Imagini).")
 
 # Sidebar
 with st.sidebar:
