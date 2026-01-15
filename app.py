@@ -182,10 +182,18 @@ if "last_analysis" in st.session_state:
     
     with col1:
         if st.button("Generează Prezentare PPT (.pptx)"):
-            with st.spinner("Generez structura și fișierul PowerPoint..."):
+            with st.spinner(f"Generez structura folosind modelul {model_name.replace('models/', '')}..."):
                 
-                # Pasul 2: Cerem AI-ului să transforme analiza în format JSON pentru slide-uri
-                json_model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
+                # FIX: Folosim 'model_name' (cel ales de tine), nu unul hardcoded.
+                # Modelele 1.5 suportă nativ JSON mode.
+                try:
+                    json_model = genai.GenerativeModel(
+                        model_name, 
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                except:
+                    # Fallback pentru modele mai vechi care nu suportă config JSON explicit
+                    json_model = genai.GenerativeModel(model_name)
                 
                 slide_prompt = f"""
                 Acționează ca un expert în prezentări de business.
@@ -194,7 +202,7 @@ if "last_analysis" in st.session_state:
                 ANALIZA:
                 {st.session_state.last_analysis}
                 
-                Output-ul TREBUIE să fie un JSON valid cu această structură:
+                Output-ul TREBUIE să fie un JSON valid (fără ```json sau alte marcaje) cu această structură:
                 {{
                     "presentation_title": "Titlul Principal",
                     "slides": [
@@ -211,6 +219,10 @@ if "last_analysis" in st.session_state:
                     json_response = json_model.generate_content(slide_prompt)
                     slides_json = json_response.text
                     
+                    # Curățăm textul în caz că modelul pune markdown ```json ... ```
+                    # Deși JSON mode ar trebui să prevină asta, e bine să fim siguri.
+                    slides_json = slides_json.replace("```json", "").replace("```", "").strip()
+                    
                     # Creăm fișierul PPTX
                     pptx_path = create_presentation_file(slides_json)
                     
@@ -222,10 +234,11 @@ if "last_analysis" in st.session_state:
                                 file_name="Marketing_Strategy.pptx",
                                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
                             )
-                        st.success("Prezentarea a fost generată! O poți deschide în PowerPoint, Google Slides sau importa în Gamma.")
+                        st.success("Prezentarea a fost generată! O poți deschide în PowerPoint sau importa în Gamma.")
                     
                 except Exception as e:
                     st.error(f"Eroare la generare slide-uri: {e}")
+                    st.warning("Încearcă să selectezi alt model din lista din stânga (ex: Gemini 1.5 Pro).")
 
     with col2:
-        st.info("💡 **Tip:** Descarcă fișierul `.pptx` și încarcă-l în **Gamma** (funcția Import) sau **Google Slides** pentru a aplica design-uri profesionale instant.")
+        st.info("💡 **Tip:** Fișierul `.pptx` generat este 'scheletul' perfect. Importă-l în **Gamma** sau **Google Slides** pentru design.")
