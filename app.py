@@ -1,158 +1,231 @@
 import streamlit as st
 import google.generativeai as genai
 from tavily import TavilyClient
-import PyPDF2
+from pptx import Presentation
+from pptx.util import Inches, Pt
+import tempfile
+import os
+import json
+import re
 
 # --- 1. Configurare Pagină ---
-st.set_page_config(
-    page_title="Marketing Portfolio Optimizer",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="Marketing Portfolio Optimizer + Slides", page_icon="📊", layout="wide")
 
-# --- 2. Gestionare Secrete (API Keys) ---
+# --- 2. Gestionare Secrete ---
 try:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
     TAVILY_API_KEY = st.secrets["TAVILY_API_KEY"]
 except FileNotFoundError:
-    st.error("⚠️ Cheile API nu sunt configurate! Configurează secrets.toml sau Streamlit Cloud Secrets.")
+    st.error("⚠️ Configurează cheile API în .streamlit/secrets.toml")
     st.stop()
 
-# Configurare Clienți API
 genai.configure(api_key=GOOGLE_API_KEY)
 tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
 
-# --- 3. Funcție pentru preluarea modelelor disponibile ---
-@st.cache_data(ttl=3600) # Salvăm lista în cache 1 oră ca să nu interogăm Google la fiecare click
-def get_available_gemini_models():
-    """Interoghează API-ul Google și returnează doar modelele Gemini generative."""
-    models_list = []
+# --- 3. Funcții Helper (AI & PPTX) ---
+
+@st.cache_data(ttl=3600)
+def get_available_models():
+    """Obține lista modelelor Gemini."""
     try:
-        for m in genai.list_models():
-            # Filtrăm: Vrem doar modele 'gemini' care suportă 'generateContent'
-            if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name:
-                models_list.append(m.name)
-        # Le sortăm invers alfabetic (de obicei cele mai noi '1.5' apar ultimele sau primele în funcție de nume)
-        models_list.sort(reverse=True)
-        return models_list
-    except Exception as e:
-        st.error(f"Nu am putut prelua lista de modele: {e}")
-        return ["models/gemini-1.5-flash"] # Fallback în caz de eroare
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name]
+        return sorted(models, reverse=True)
+    except:
+        return ["models/gemini-1.5-flash"]
 
-# --- 4. Interfața Grafică (UI) ---
-st.title("📈 Asistent AI: Optimizare Portofoliu")
-st.markdown("Analiză dinamică folosind modelele live de la Google.")
-
-with st.sidebar:
-    st.header("⚙️ Configurare AI")
-    
-    # Preluăm lista live
-    available_models = get_available_gemini_models()
-    
-    # Selector Dinamic
-    if available_models:
-        selected_model_name = st.selectbox(
-            "Selectează Modelul AI (Live din Google):",
-            available_models,
-            index=0, # Selectează primul implicit
-            format_func=lambda x: x.replace("models/", "").upper() # Afișare mai curată (fără 'models/')
-        )
-    else:
-        st.error("Niciun model disponibil.")
-        st.stop()
-
-    st.divider()
-    
-    st.header("📂 Documente")
-    uploaded_file = st.file_uploader("Încarcă Catalogul (PDF)", type=['pdf'])
-    
-    if st.button("🗑️ Șterge Istoric Chat"):
-        st.session_state.messages = []
-        st.rerun()
-
-# --- 5. Funcții Backend ---
-
-def extract_text_from_pdf(pdf_file):
+def upload_to_gemini(uploaded_file):
+    """Upload fișier pentru analiză vizuală."""
     try:
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text() or ""
-        return text
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.getvalue())
+            tmp_path = tmp.name
+        file_ref = genai.upload_file(tmp_path, mime_type="application/pdf")
+        os.remove(tmp_path)
+        return file_ref
     except Exception as e:
-        st.error(f"Eroare PDF: {e}")
+        st.error(f"Upload failed: {e}")
         return None
 
 def search_internet(query):
     try:
-        response = tavily_client.search(query=query, search_depth="advanced", max_results=5, include_answer=True)
-        context_parts = []
-        if 'answer' in response:
-            context_parts.append(f"Tavily Answer: {response['answer']}")
-        for res in response.get('results', []):
-            context_parts.append(f"- {res['content']} (Sursa: {res['url']})")
-        return "\n".join(context_parts)
-    except Exception as e:
-        return f"Eroare Tavily: {e}"
+        res = tavily_client.search(query=query, search_depth="advanced", max_results=4)
+        return "\n".join([f"- {r['content']} ({r['url']})" for r in res.get('results', [])])
+    except:
+        return "Nu s-au găsit date pe internet."
 
-# --- 6. Logica Principală ---
+def create_presentation_file(slides_json):
+    """
+    Generează un fișier PPTX din datele JSON primite de la AI.
+    """
+    prs = Presentation()
+    
+    # Titlu Slides
+    try:
+        data = json.loads(slides_json)
+        
+        # 1. Slide de Titlu
+        title_slide_layout = prs.slide_layouts[0]
+        slide = prs.slides.add_slide(title_slide_layout)
+        title = slide.shapes.title
+        subtitle = slide.placeholders[1]
+        
+        title.text = data.get("presentation_title", "Analiză Portofoliu")
+        subtitle.text = "Generat automat cu AI"
+
+        # 2. Slide-uri de conținut
+        bullet_slide_layout = prs.slide_layouts[1]
+        
+        for slide_data in data.get("slides", []):
+            slide = prs.slides.add_slide(bullet_slide_layout)
+            shapes = slide.shapes
+            
+            # Titlu Slide
+            title_shape = shapes.title
+            title_shape.text = slide_data.get("title", "Slide")
+            
+            # Conținut (Bullets)
+            body_shape = shapes.placeholders[1]
+            tf = body_shape.text_frame
+            
+            content_points = slide_data.get("points", [])
+            if content_points:
+                tf.text = content_points[0] # Primul punct
+                for point in content_points[1:]:
+                    p = tf.add_paragraph()
+                    p.text = point
+                    p.level = 0
+
+        # Salvare în fișier temporar
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
+            prs.save(tmp.name)
+            return tmp.name
+            
+    except Exception as e:
+        st.error(f"Eroare la generarea PPT: {e}")
+        return None
+
+# --- 4. Interfață ---
+
+st.title("📊 Asistent Marketing & Generator Prezentări")
+st.markdown("Analizează catalogul, caută trenduri și **generează o prezentare PPT** instant.")
+
+with st.sidebar:
+    st.header("⚙️ Setări")
+    model_name = st.selectbox("Model AI", get_available_models(), format_func=lambda x: x.replace("models/", "").upper())
+    uploaded_file = st.file_uploader("Catalog PDF", type=['pdf'])
+    
+    if st.button("Reset"):
+        st.session_state.clear()
+        st.rerun()
+
+# --- 5. Logica ---
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Procesare PDF
-if uploaded_file:
-    if "current_file_name" not in st.session_state or st.session_state.current_file_name != uploaded_file.name:
-        with st.spinner("⏳ Procesez catalogul..."):
-            pdf_text = extract_text_from_pdf(uploaded_file)
-            if pdf_text:
-                st.session_state.pdf_content = pdf_text
-                st.session_state.current_file_name = uploaded_file.name
-                st.success(f"✅ Gata! Catalog analizat.")
+if uploaded_file and "gemini_file" not in st.session_state:
+    with st.spinner("Procesez PDF-ul..."):
+        ref = upload_to_gemini(uploaded_file)
+        if ref:
+            st.session_state.gemini_file = ref
+            st.success("PDF Încărcat!")
 
-# Afișare Chat
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# Chat
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
 # Input User
-if prompt := st.chat_input("Întreabă ceva despre catalog..."):
+if prompt := st.chat_input("Ex: Propune o strategie pentru pixuri ecologice"):
     
-    if "pdf_content" not in st.session_state:
-        st.error("Te rog încarcă PDF-ul.")
+    if "gemini_file" not in st.session_state:
+        st.error("Încarcă PDF-ul.")
     else:
+        # User Message
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
+        # AI Analysis
         with st.chat_message("assistant"):
-            msg_placeholder = st.empty()
-            
-            with st.spinner(f"Rulez modelul {selected_model_name.replace('models/', '')}..."):
-                
-                # Context Internet
+            with st.spinner("Analizez și caut pe net..."):
                 web_data = search_internet(prompt)
+                model = genai.GenerativeModel(model_name)
                 
-                # Configurare Model Dinamic
-                model = genai.GenerativeModel(selected_model_name)
+                # Pasul 1: Analiza Text
+                analysis_prompt = [
+                    f"""Ești expert Marketing.
+                    CONTEXT PDF: Analizează fișierul atașat.
+                    CONTEXT NET: {web_data}
+                    ÎNTREBARE: {prompt}
+                    Răspunde detaliat în română.""",
+                    st.session_state.gemini_file
+                ]
                 
-                # Prompt
-                full_prompt = f"""
-                Ești expert în Marketing.
-                CATALOG PDF: {st.session_state.pdf_content[:60000]}
-                INTERNET DATA: {web_data}
-                ÎNTREBARE: {prompt}
-                Răspunde detaliat în română.
-                """
+                response = model.generate_content(analysis_prompt)
+                ai_text = response.text
+                st.markdown(ai_text)
+                st.session_state.messages.append({"role": "assistant", "content": ai_text})
+                
+                # Salvăm ultimul context pentru generarea prezentării
+                st.session_state.last_analysis = ai_text
+                st.session_state.last_prompt = prompt
 
+# --- 6. Butonul Magic: Generare Prezentare ---
+
+if "last_analysis" in st.session_state:
+    st.divider()
+    st.subheader("🎬 Acțiuni")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        if st.button("Generează Prezentare PPT (.pptx)"):
+            with st.spinner("Generez structura și fișierul PowerPoint..."):
+                
+                # Pasul 2: Cerem AI-ului să transforme analiza în format JSON pentru slide-uri
+                json_model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
+                
+                slide_prompt = f"""
+                Acționează ca un expert în prezentări de business.
+                Pe baza analizei de mai jos, creează o structură pentru o prezentare PowerPoint de 5-7 slide-uri.
+                
+                ANALIZA:
+                {st.session_state.last_analysis}
+                
+                Output-ul TREBUIE să fie un JSON valid cu această structură:
+                {{
+                    "presentation_title": "Titlul Principal",
+                    "slides": [
+                        {{
+                            "title": "Titlu Slide 1",
+                            "points": ["Idee 1", "Idee 2", "Idee 3"]
+                        }}
+                    ]
+                }}
+                """
+                
                 try:
-                    response = model.generate_content(full_prompt, stream=True)
-                    full_resp = ""
-                    for chunk in response:
-                        if chunk.text:
-                            full_resp += chunk.text
-                            msg_placeholder.markdown(full_resp + "▌")
-                    msg_placeholder.markdown(full_resp)
-                    st.session_state.messages.append({"role": "assistant", "content": full_resp})
+                    # Generăm structura JSON
+                    json_response = json_model.generate_content(slide_prompt)
+                    slides_json = json_response.text
+                    
+                    # Creăm fișierul PPTX
+                    pptx_path = create_presentation_file(slides_json)
+                    
+                    if pptx_path:
+                        with open(pptx_path, "rb") as file:
+                            st.download_button(
+                                label="📥 Descarcă Prezentarea PowerPoint",
+                                data=file,
+                                file_name="Marketing_Strategy.pptx",
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                            )
+                        st.success("Prezentarea a fost generată! O poți deschide în PowerPoint, Google Slides sau importa în Gamma.")
+                    
                 except Exception as e:
-                    msg_placeholder.error(f"Eroare generare: {e}")
+                    st.error(f"Eroare la generare slide-uri: {e}")
+
+    with col2:
+        st.info("💡 **Tip:** Descarcă fișierul `.pptx` și încarcă-l în **Gamma** (funcția Import) sau **Google Slides** pentru a aplica design-uri profesionale instant.")
