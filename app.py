@@ -4,116 +4,170 @@ from tavily import TavilyClient
 import PyPDF2
 import os
 
-# --- Configurare Pagină ---
-st.set_page_config(page_title="Marketing Portfolio Optimizer", page_icon="🚀", layout="wide")
+# --- 1. Configurare Pagină ---
+st.set_page_config(
+    page_title="Marketing Portfolio Optimizer",
+    page_icon="📈",
+    layout="wide"
+)
 
-st.title("🚀 Asistent Optimizare Portofoliu (Marketing)")
+# --- 2. Gestionare Secrete (API Keys) ---
+# Încercăm să încărcăm cheile din st.secrets (Setările din Streamlit Cloud)
+try:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    TAVILY_API_KEY = st.secrets["TAVILY_API_KEY"]
+except FileNotFoundError:
+    st.error("⚠️ Cheile API nu sunt configurate! Te rog configurează 'GOOGLE_API_KEY' și 'TAVILY_API_KEY' în Streamlit Secrets.")
+    st.stop()
+
+# Configurare Clienti API
+genai.configure(api_key=GOOGLE_API_KEY)
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+
+# --- 3. Interfața Grafică (UI) ---
+st.title("📈 Asistent AI: Optimizare Portofoliu Promoționale")
 st.markdown("""
-Acest tool analizează catalogul PDF încărcat și folosește internetul pentru a găsi trenduri noi.
+**Salut!** Sunt asistentul tău virtual pentru analiză de produs.
+1. Încarcă catalogul PDF curent.
+2. Întreabă-mă orice despre optimizare, trenduri sau comparații cu piața.
 """)
 
-# --- Sidebar pentru setări ---
 with st.sidebar:
-    st.header("Configurare")
-    # Aici userul introduce cheile. În producție poți folosi st.secrets
-    gemini_api_key = st.text_input("Google Gemini API Key", type="password")
-    tavily_api_key = st.text_input("Tavily API Key", type="password")
+    st.header("📂 Documente")
+    uploaded_file = st.file_uploader("Încarcă Catalogul (PDF)", type=['pdf'])
     
-    st.info("Încarcă catalogul, apoi discută cu AI-ul despre optimizare.")
-    uploaded_file = st.file_uploader("Încarcă Catalog PDF", type=['pdf'])
+    st.markdown("---")
+    st.markdown("**Cum funcționează?**")
+    st.markdown("1. AI-ul citește tot PDF-ul.")
+    st.markdown("2. Caută pe internet informații live despre trenduri.")
+    st.markdown("3. Îți oferă sfaturi strategice.")
+    
+    if st.button("Șterge Istoric Chat"):
+        st.session_state.messages = []
+        st.rerun()
 
-# --- Funcții Utilitare ---
+# --- 4. Funcții Backend ---
 
 def extract_text_from_pdf(pdf_file):
-    """Extrage textul din PDF."""
-    pdf_reader = PyPDF2.PdfReader(pdf_file)
-    text = ""
-    for page in pdf_reader.pages:
-        text += page.extract_text() or ""
-    return text
-
-def search_internet(query, api_key):
-    """Caută pe net folosind Tavily."""
+    """Citește textul din PDF pagină cu pagină."""
     try:
-        tavily = TavilyClient(api_key=api_key)
-        response = tavily.search(query=query, search_depth="advanced", max_results=3)
-        context = "\n".join([f"- {res['content']} (Sursa: {res['url']})" for res in response['results']])
-        return context
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        st.error(f"Eroare la citirea PDF-ului: {e}")
+        return None
+
+def search_internet(query):
+    """Caută pe internet folosind Tavily pentru context actualizat."""
+    try:
+        # Căutare avansată pentru a obține conținut relevant
+        response = tavily_client.search(
+            query=query, 
+            search_depth="advanced", 
+            max_results=5,
+            include_answer=True
+        )
+        
+        # Construim un rezumat al surselor găsite
+        context_parts = []
+        if 'answer' in response:
+            context_parts.append(f"Răspuns direct Tavily: {response['answer']}")
+        
+        for res in response.get('results', []):
+            context_parts.append(f"- {res['content']} (Sursa: {res['url']})")
+            
+        return "\n".join(context_parts)
     except Exception as e:
         return f"Eroare la căutarea pe internet: {e}"
 
-# --- Logica Principală ---
+# --- 5. Logica Principală a Aplicației ---
 
-if gemini_api_key and tavily_api_key and uploaded_file:
-    
-    # 1. Configurare AI
-    genai.configure(api_key=gemini_api_key)
-    
-    # Folosim Gemini 1.5 Flash pentru viteză și context mare
-    model = genai.GenerativeModel('gemini-1.5-flash')
+# Inițializare istoric chat
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    # 2. Procesare PDF (doar o dată, salvăm în session_state)
+# Procesare PDF (doar când se încarcă un fișier nou)
+if uploaded_file:
+    # Verificăm dacă fișierul a fost deja procesat ca să nu pierdem timp
+    if "current_file_name" not in st.session_state or st.session_state.current_file_name != uploaded_file.name:
+        with st.spinner("⏳ Citesc și analizez catalogul... (poate dura câteva secunde)"):
+            pdf_text = extract_text_from_pdf(uploaded_file)
+            if pdf_text:
+                st.session_state.pdf_content = pdf_text
+                st.session_state.current_file_name = uploaded_file.name
+                st.success(f"✅ Catalogul '{uploaded_file.name}' a fost procesat! Poți începe conversația.")
+            else:
+                st.warning("Nu am putut extrage text din acest PDF.")
+
+# Afișare mesaje anterioare
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Zona de input pentru utilizator
+if prompt := st.chat_input("Ex: Ce produse eco-friendly sunt în trend și lipsesc din catalogul nostru?"):
+    
     if "pdf_content" not in st.session_state:
-        with st.spinner("Analizez catalogul PDF..."):
-            text_content = extract_text_from_pdf(uploaded_file)
-            st.session_state["pdf_content"] = text_content
-            st.success("Catalog analizat cu succes!")
-
-    # 3. Inițializare Chat
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Afișare istoric chat
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # 4. Input Utilizator
-    if prompt := st.chat_input("Ex: Ce produse sunt demodate? Ce trenduri noi sunt pe piață?"):
-        
-        # Adaugă mesajul utilizatorului
+        st.error("Te rog încarcă mai întâi un catalog PDF în bara din stânga.")
+    else:
+        # 1. Adăugăm mesajul utilizatorului în istoric
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # 5. Generare Răspuns
+        # 2. Procesare Răspuns AI
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             
-            with st.spinner("Caut informații pe internet și analizez catalogul..."):
-                # a) Căutăm pe internet context relevant pentru întrebare
-                web_context = search_internet(prompt, tavily_api_key)
+            with st.spinner("🔍 Caut pe internet și compar cu catalogul tău..."):
                 
-                # b) Construim prompt-ul final pentru Gemini
-                final_prompt = f"""
-                Ești un expert în Marketing și Management de Produs.
+                # a) Cutare pe internet
+                web_knowledge = search_internet(prompt)
                 
-                CONTEXT CATALOG COMPANIE (PDF):
-                {st.session_state['pdf_content'][:50000]} 
-                *(Nota: Am limitat textul pentru siguranță, dar Gemini duce mult mai mult)*
-
-                CONTEXT DIN INTERNET (TRENDURI/COMPETIȚIE):
-                {web_context}
-
-                ÎNTREBAREA UTILIZATORULUI:
-                {prompt}
-
-                INSTRUCȚIUNI:
-                - Analizează produsele din catalog în raport cu informațiile de pe internet.
-                - Propune optimizări, eliminări de produse vechi sau idei noi.
-                - Fii concis, profesionist și oferă pași acționabili.
-                - Răspunde în limba română.
+                # b) Configurare Model AI (Gemini 1.5 Flash)
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                
+                # c) Construire Prompt Complex
+                system_instruction = f"""
+                Ești un Senior Product Manager și Marketing Strategist pentru o companie de produse promoționale.
+                
+                SARCINA TA:
+                Ajută echipa de marketing să optimizeze portofoliul răspunzând la întrebarea utilizatorului.
+                
+                DATE DISPONIBILE:
+                1. CATALOGUL NOSTRU (PDF): 
+                {st.session_state.pdf_content[:60000]} 
+                *(Text trunchiat pentru optimizare dacă e prea lung)*
+                
+                2. INFORMAȚII EXTERNE (INTERNET - TRENDURI/COMPETIȚIE):
+                {web_knowledge}
+                
+                INSTRUCȚIUNI DE RĂSPUNS:
+                - Analizează ce avem în catalog vs ce se cere pe piață (conform datelor de pe internet).
+                - Fii critic dar constructiv. Dacă un produs e demodat, spune-o clar.
+                - Oferă sugestii concrete (nume de produse, materiale, culori).
+                - Răspunde în limba Română, formatat frumos cu Markdown (bold, liste).
                 """
+                
+                full_prompt = f"{system_instruction}\n\nÎNTREBAREA UTILIZATORULUI: {prompt}"
 
                 try:
-                    response = model.generate_content(final_prompt)
-                    ai_reply = response.text
+                    # Generare răspuns stream (să apară textul pe măsură ce e scris)
+                    response = model.generate_content(full_prompt, stream=True)
+                    full_response = ""
+                    for chunk in response:
+                        if chunk.text:
+                            full_response += chunk.text
+                            message_placeholder.markdown(full_response + "▌")
+                    
+                    message_placeholder.markdown(full_response)
+                    
+                    # Salvare în istoric
+                    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                
                 except Exception as e:
-                    ai_reply = f"A apărut o eroare la generare: {e}"
-
-            # Afișează și salvează răspunsul
-            message_placeholder.markdown(ai_reply)
-            st.session_state.messages.append({"role": "assistant", "content": ai_reply})
-
-else:
-    st.warning("Te rog introdu cheile API în stânga și încarcă un fișier PDF pentru a începe.")
+                    error_msg = f"A apărut o eroare la generare: {e}"
+                    message_placeholder.error(error_msg)
