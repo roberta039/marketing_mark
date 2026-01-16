@@ -222,4 +222,14 @@ if "last_analysis" in st.session_state:
             """
             
             resp = json_model.generate_content(prompt_slides)
-            json_text = resp.text.replace("```json", 
+            json_text = resp.text.replace("```json", "").replace("```", "").strip()
+            
+            pptx_path = create_presentation_with_images(json_text, progress_bar.progress)
+            
+            progress_bar.progress(100, text="Gata!")
+            
+            if pptx_path:
+                with open(pptx_path, "rb") as f:
+                    st.download_button("📥 Descarcă PPTX", f, "Prezentare_Turbo.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        except Exception as e:
+            st.error(f"Eroare: {e}")
