@@ -15,16 +15,14 @@ import random
 import time
 
 # --- 1. Configurare Pagină ---
-st.set_page_config(page_title="Marketing AI (Hybrid)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Marketing AI (Turbo Free)", page_icon="⚡", layout="wide")
 
 # --- 2. Secrete ---
 try:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
     TAVILY_API_KEY = st.secrets["TAVILY_API_KEY"]
-    # Încearcă să ia cheia HF, dar nu oprește scriptul dacă lipsește (folosește fallback)
-    HF_API_KEY = st.secrets.get("HF_API_KEY", "") 
 except:
-    st.error("⚠️ Lipsesc cheile API de bază (Google/Tavily). Verifică secrets.")
+    st.error("⚠️ Lipsesc cheile API! Verifică .streamlit/secrets.toml")
     st.stop()
 
 genai.configure(api_key=GOOGLE_API_KEY)
@@ -56,81 +54,60 @@ def search_internet(query):
         return "\n".join([f"- {r['content']}" for r in res.get('results', [])])
     except: return "Fără date."
 
-# --- SISTEM HYBRID DE GENERARE IMAGINI ---
-
-def try_pollinations(prompt_text):
-    """Metoda de rezervă (Backup): Pollinations"""
+# --- FUNCȚIE GENERARE IMAGINE (MODEL TURBO - NELIMITAT) ---
+def generate_image_free(prompt_text):
+    """
+    Generează imagine folosind Pollinations cu modelul TURBO.
+    Acesta nu are limita de credite pe care o are Flux.
+    """
     try:
-        # Folosim un seed random și așteptăm puțin pentru a evita Rate Limit
-        time.sleep(random.uniform(2, 4)) 
-        
+        # 1. Scurtare Prompt
         short_prompt = prompt_text[:150]
         encoded_prompt = urllib.parse.quote(short_prompt)
-        random_seed = random.randint(1, 100000)
         
-        # Folosim modelul Turbo (mai rapid)
+        # 2. Random Seed (Ca să fie poze diferite)
+        random_seed = random.randint(1, 999999)
+        
+        # 3. URL MAGIC (Am schimbat model=flux cu model=turbo)
+        # model=turbo este rapid și gratuit nelimitat
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=turbo&nologo=true&seed={random_seed}"
         
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=20)
+        # 4. Headers
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        # 5. Request (Turbo e rapid, punem timeout mic)
+        response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
             return BytesIO(response.content)
-    except:
-        pass
-    return None
+        else:
+            print(f"Server Refusal: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"Eroare Imagine: {e}")
+        return None
 
-def try_huggingface(prompt_text):
-    """Metoda Principală: Hugging Face (Stable Diffusion v1.5 - Rapid)"""
-    if not HF_API_KEY:
-        return None # Nu avem cheie, trecem la backup
-
-    # Folosim v1-5 pentru că e "ușor" și răspunde rapid pe Free Tier
-    API_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-    payload = {"inputs": prompt_text}
-
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=15)
-        if response.status_code == 200:
-            return BytesIO(response.content)
-    except:
-        pass
-    return None
-
-def generate_image_robust(prompt_text):
-    """Încearcă HF -> Dacă pică -> Încearcă Pollinations"""
-    
-    # 1. Încercăm Hugging Face
-    print("Încerc Hugging Face...")
-    img = try_huggingface(prompt_text)
-    if img: return img
-    
-    # 2. Dacă nu a mers, încercăm Pollinations
-    print("HF a eșuat. Încerc Pollinations...")
-    img = try_pollinations(prompt_text)
-    if img: return img
-    
-    return None
-
-# --- 4. Generare PPT ---
-
-def create_presentation_robust(slides_json, progress_callback=None):
+def create_presentation_with_images(slides_json, progress_callback=None):
     prs = Presentation()
     try:
         data = json.loads(slides_json)
     except:
         return None
 
+    # Slide Titlu
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = data.get("presentation_title", "Marketing")
-    slide.placeholders[1].text = "Generat cu AI Hybrid"
+    slide.placeholders[1].text = "Generat cu AI"
     blank_layout = prs.slide_layouts[6] 
     total = len(data.get("slides", []))
 
     for i, slide_data in enumerate(data.get("slides", [])):
+        
         if progress_callback:
-            progress_callback(int((i/total)*90), f"Generez Slide {i+1}/{total} (Caut cea mai bună sursă foto)...")
+            progress_callback(int((i/total)*90), f"Generez Slide {i+1}/{total} (Model Turbo)...")
 
         slide = prs.slides.add_slide(blank_layout)
         shapes = slide.shapes
@@ -151,12 +128,12 @@ def create_presentation_robust(slides_json, progress_callback=None):
             p.font.size = Pt(18)
             p.space_after = Pt(12)
 
-        # IMAGINE ROBUSTĂ
+        # IMAGINE
         image_prompt = slide_data.get("image_prompt", "")
         image_bytes = None
         
         if image_prompt:
-            image_bytes = generate_image_robust(image_prompt)
+            image_bytes = generate_image_free(image_prompt)
         
         if image_bytes:
             try:
@@ -165,24 +142,24 @@ def create_presentation_robust(slides_json, progress_callback=None):
                 image_bytes = None
         
         if not image_bytes:
-            # Fallback Vizual
+            # Fallback
             shape = shapes.add_shape(1, Inches(5.5), Inches(1.8), Inches(4.2), Inches(4.2))
             shape.fill.solid()
             shape.fill.fore_color.rgb = RGBColor(230, 230, 230)
-            shape.text_frame.text = "Imagine Indisponibilă"
+            shape.text_frame.text = "Fără Imagine"
             shape.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
         prs.save(tmp.name)
         return tmp.name
 
-# --- 5. UI ---
+# --- 4. UI ---
 
-st.title("🛡️ Asistent Marketing (Sistem Robust)")
+st.title("⚡ Asistent Marketing (Turbo Free)")
 
 with st.sidebar:
-    st.header("Setări")
-    model_name = st.selectbox("Model", get_available_models(), format_func=lambda x: x.replace("models/", "").upper())
+    st.header("Configurare")
+    model_name = st.selectbox("Model AI", get_available_models(), format_func=lambda x: x.replace("models/", "").upper())
     uploaded_file = st.file_uploader("Catalog PDF", type=['pdf'])
     if st.button("Reset"):
         st.session_state.clear()
@@ -220,7 +197,7 @@ if prompt := st.chat_input("Ex: Idei produse"):
 
 if "last_analysis" in st.session_state:
     st.divider()
-    if st.button("✨ Generează Prezentare (Auto-Fix)"):
+    if st.button("✨ Generează Prezentare (Turbo)"):
         
         progress_bar = st.progress(0, text="Structura...")
         
@@ -233,7 +210,7 @@ if "last_analysis" in st.session_state:
             prompt_slides = f"""
             Pe baza analizei: {st.session_state.last_analysis}
             Generează JSON pentru 4-5 slide-uri.
-            Include 'image_prompt' (ENGLEZĂ, max 20 cuvinte).
+            Include 'image_prompt' (ENGLEZĂ, max 15 cuvinte).
             
             FORMAT:
             {{
@@ -245,14 +222,4 @@ if "last_analysis" in st.session_state:
             """
             
             resp = json_model.generate_content(prompt_slides)
-            json_text = resp.text.replace("```json", "").replace("```", "").strip()
-            
-            pptx_path = create_presentation_robust(json_text, progress_bar.progress)
-            
-            progress_bar.progress(100, text="Gata!")
-            
-            if pptx_path:
-                with open(pptx_path, "rb") as f:
-                    st.download_button("📥 Descarcă PPTX", f, "Prezentare_Robust.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
-        except Exception as e:
-            st.error(f"Eroare: {e}")
+            json_text = resp.text.replace("```json", 
