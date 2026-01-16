@@ -9,19 +9,22 @@ import tempfile
 import os
 import json
 import requests
+import urllib.parse
 from io import BytesIO
+import random
 import time
 
 # --- 1. Configurare Pagină ---
-st.set_page_config(page_title="Marketing AI (HuggingFace Edition)", page_icon="🎨", layout="wide")
+st.set_page_config(page_title="Marketing AI (Hybrid)", page_icon="🛡️", layout="wide")
 
 # --- 2. Secrete ---
 try:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
     TAVILY_API_KEY = st.secrets["TAVILY_API_KEY"]
-    HF_API_KEY = st.secrets["HF_API_KEY"] # <--- Cheia Hugging Face
+    # Încearcă să ia cheia HF, dar nu oprește scriptul dacă lipsește (folosește fallback)
+    HF_API_KEY = st.secrets.get("HF_API_KEY", "") 
 except:
-    st.error("⚠️ Lipsesc cheile API! Asigură-te că ai 'HF_API_KEY' în secrets.")
+    st.error("⚠️ Lipsesc cheile API de bază (Google/Tavily). Verifică secrets.")
     st.stop()
 
 genai.configure(api_key=GOOGLE_API_KEY)
@@ -51,72 +54,88 @@ def search_internet(query):
     try:
         res = tavily_client.search(query=query, search_depth="advanced", max_results=3)
         return "\n".join([f"- {r['content']}" for r in res.get('results', [])])
-    except: return "Fără date internet."
+    except: return "Fără date."
 
-# --- FUNCȚIE GENERARE IMAGINE (HUGGING FACE) ---
-def generate_image_hf(prompt_text):
-    """
-    Folosește API-ul gratuit Hugging Face (Model SDXL).
-    """
-    # Endpoint pentru Stable Diffusion XL (foarte bun pt produse)
-    API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-    
-    # Payload
-    payload = {
-        "inputs": prompt_text,
-        "parameters": {"num_inference_steps": 25} # Calitate standard
-    }
+# --- SISTEM HYBRID DE GENERARE IMAGINI ---
 
-    # Retry logic (uneori modelul 'doarme' și trebuie trezit)
-    for attempt in range(4):
-        try:
-            response = requests.post(API_URL, headers=headers, json=payload)
-            
-            if response.status_code == 200:
-                return BytesIO(response.content)
-            
-            # Eroare comună: "Model is loading" (așteptăm și reîncercăm)
-            elif "loading" in response.text.lower():
-                wait_time = response.json().get("estimated_time", 10)
-                print(f"Modelul se încarcă... Aștept {wait_time} secunde.")
-                time.sleep(wait_time + 1) # Așteptăm
-                continue
-            
-            else:
-                print(f"Eroare HF: {response.status_code} - {response.text}")
-                time.sleep(2)
-                
-        except Exception as e:
-            print(f"Eroare conexiune: {e}")
-            
+def try_pollinations(prompt_text):
+    """Metoda de rezervă (Backup): Pollinations"""
+    try:
+        # Folosim un seed random și așteptăm puțin pentru a evita Rate Limit
+        time.sleep(random.uniform(2, 4)) 
+        
+        short_prompt = prompt_text[:150]
+        encoded_prompt = urllib.parse.quote(short_prompt)
+        random_seed = random.randint(1, 100000)
+        
+        # Folosim modelul Turbo (mai rapid)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=turbo&nologo=true&seed={random_seed}"
+        
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=20)
+        
+        if response.status_code == 200 and "image" in response.headers.get("Content-Type", ""):
+            return BytesIO(response.content)
+    except:
+        pass
     return None
 
-def create_presentation_with_images(slides_json, progress_callback=None):
+def try_huggingface(prompt_text):
+    """Metoda Principală: Hugging Face (Stable Diffusion v1.5 - Rapid)"""
+    if not HF_API_KEY:
+        return None # Nu avem cheie, trecem la backup
+
+    # Folosim v1-5 pentru că e "ușor" și răspunde rapid pe Free Tier
+    API_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+    payload = {"inputs": prompt_text}
+
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=15)
+        if response.status_code == 200:
+            return BytesIO(response.content)
+    except:
+        pass
+    return None
+
+def generate_image_robust(prompt_text):
+    """Încearcă HF -> Dacă pică -> Încearcă Pollinations"""
+    
+    # 1. Încercăm Hugging Face
+    print("Încerc Hugging Face...")
+    img = try_huggingface(prompt_text)
+    if img: return img
+    
+    # 2. Dacă nu a mers, încercăm Pollinations
+    print("HF a eșuat. Încerc Pollinations...")
+    img = try_pollinations(prompt_text)
+    if img: return img
+    
+    return None
+
+# --- 4. Generare PPT ---
+
+def create_presentation_robust(slides_json, progress_callback=None):
     prs = Presentation()
     try:
         data = json.loads(slides_json)
     except:
         return None
 
-    # Slide Titlu
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = data.get("presentation_title", "Marketing")
-    slide.placeholders[1].text = "Generat cu Gemini & Stable Diffusion"
-
-    # Layout Custom
+    slide.placeholders[1].text = "Generat cu AI Hybrid"
     blank_layout = prs.slide_layouts[6] 
     total = len(data.get("slides", []))
 
     for i, slide_data in enumerate(data.get("slides", [])):
-        
         if progress_callback:
-            progress_callback(int((i/total)*80)+10, f"Generez Slide {i+1}/{total} (SDXL)...")
+            progress_callback(int((i/total)*90), f"Generez Slide {i+1}/{total} (Caut cea mai bună sursă foto)...")
 
         slide = prs.slides.add_slide(blank_layout)
         shapes = slide.shapes
         
-        # Titlu & Text
+        # Text
         tb = shapes.add_textbox(Inches(0.5), Inches(0.4), Inches(9), Inches(1))
         tb.text_frame.paragraphs[0].text = slide_data.get("title", "Slide")
         tb.text_frame.paragraphs[0].font.size = Pt(32)
@@ -132,12 +151,12 @@ def create_presentation_with_images(slides_json, progress_callback=None):
             p.font.size = Pt(18)
             p.space_after = Pt(12)
 
-        # IMAGINE HF
+        # IMAGINE ROBUSTĂ
         image_prompt = slide_data.get("image_prompt", "")
         image_bytes = None
         
         if image_prompt:
-            image_bytes = generate_image_hf(image_prompt)
+            image_bytes = generate_image_robust(image_prompt)
         
         if image_bytes:
             try:
@@ -146,23 +165,24 @@ def create_presentation_with_images(slides_json, progress_callback=None):
                 image_bytes = None
         
         if not image_bytes:
+            # Fallback Vizual
             shape = shapes.add_shape(1, Inches(5.5), Inches(1.8), Inches(4.2), Inches(4.2))
             shape.fill.solid()
             shape.fill.fore_color.rgb = RGBColor(230, 230, 230)
-            shape.text_frame.text = "Fără Imagine"
+            shape.text_frame.text = "Imagine Indisponibilă"
             shape.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
         prs.save(tmp.name)
         return tmp.name
 
-# --- 4. UI ---
+# --- 5. UI ---
 
-st.title("🎨 Asistent Marketing (Hugging Face)")
+st.title("🛡️ Asistent Marketing (Sistem Robust)")
 
 with st.sidebar:
-    st.header("Configurare")
-    model_name = st.selectbox("Model AI", get_available_models(), format_func=lambda x: x.replace("models/", "").upper())
+    st.header("Setări")
+    model_name = st.selectbox("Model", get_available_models(), format_func=lambda x: x.replace("models/", "").upper())
     uploaded_file = st.file_uploader("Catalog PDF", type=['pdf'])
     if st.button("Reset"):
         st.session_state.clear()
@@ -170,26 +190,24 @@ with st.sidebar:
 
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# Procesare PDF
 if uploaded_file and "gemini_file" not in st.session_state:
-    with st.spinner("⏳ Analizez PDF-ul..."):
+    with st.spinner("Procesez PDF..."):
         ref = upload_to_gemini(uploaded_file)
         if ref:
             st.session_state.gemini_file = ref
-            st.success("✅ Catalog încărcat!")
+            st.success("PDF OK!")
 
-# Chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-if prompt := st.chat_input("Ex: Vreau produse office moderne"):
+if prompt := st.chat_input("Ex: Idei produse"):
     if "gemini_file" not in st.session_state: st.error("Încarcă PDF.")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("🤖 Gândesc..."):
+            with st.spinner("Analizez..."):
                 web = search_internet(prompt)
                 try:
                     model = genai.GenerativeModel(model_name)
@@ -198,13 +216,11 @@ if prompt := st.chat_input("Ex: Vreau produse office moderne"):
                     st.session_state.messages.append({"role": "assistant", "content": resp.text})
                     st.session_state.last_analysis = resp.text
                 except Exception as e:
-                    st.error(f"Eroare AI: {e}")
-
-# --- 5. Generare PPT ---
+                    st.error(f"Eroare: {e}")
 
 if "last_analysis" in st.session_state:
     st.divider()
-    if st.button("✨ Generează Prezentare (Cu Imagini HF)"):
+    if st.button("✨ Generează Prezentare (Auto-Fix)"):
         
         progress_bar = st.progress(0, text="Structura...")
         
@@ -223,7 +239,7 @@ if "last_analysis" in st.session_state:
             {{
                 "presentation_title": "Titlu",
                 "slides": [
-                    {{ "title": "Titlu", "points": ["Punct 1"], "image_prompt": "Modern office desk with blue notebook" }}
+                    {{ "title": "Titlu", "points": ["Punct 1"], "image_prompt": "Red pen on desk" }}
                 ]
             }}
             """
@@ -231,15 +247,12 @@ if "last_analysis" in st.session_state:
             resp = json_model.generate_content(prompt_slides)
             json_text = resp.text.replace("```json", "").replace("```", "").strip()
             
-            pptx_path = create_presentation_with_images(json_text, progress_bar.progress)
+            pptx_path = create_presentation_robust(json_text, progress_bar.progress)
             
             progress_bar.progress(100, text="Gata!")
             
             if pptx_path:
                 with open(pptx_path, "rb") as f:
-                    st.download_button("📥 Descarcă PPTX", f, "Prezentare_HF.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
-            else:
-                st.error("Eroare generare.")
-                
+                    st.download_button("📥 Descarcă PPTX", f, "Prezentare_Robust.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
         except Exception as e:
             st.error(f"Eroare: {e}")
